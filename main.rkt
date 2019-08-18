@@ -1,11 +1,11 @@
 #lang racket/base
 
-(require json net/rfc6455 net/url racket/match racket/bool gregor "uuid.rkt") 
+(require json net/rfc6455 net/url racket/match racket/bool gregor libuuid) 
 
 
-(provide grapevine-version grapevine-supports grapevine-channels grapevine-channel? grapevine-node
-         set-grapevine-node! grapevine-broadcast! grapevine-connect! grapevine-connected? grapevine-status grapevine-subscribe! grapevine-unsubscribe!
-         random-grapevine-node grapevine-players/sign-in! grapevine-players/sign-out!)
+(provide grapevine-version grapevine-supports grapevine-channels grapevine-channel?
+         grapevine-broadcast! grapevine-connect! grapevine-connected? grapevine-status grapevine-subscribe! grapevine-unsubscribe!
+         grapevine-players/sign-in! grapevine-players/sign-out!)
 
 
 #||||       Constants      ||||#
@@ -31,7 +31,6 @@
 
 #|||| State Variables.  🤮 ||||#
 
-(define grapevine-node (make-bytes 6 0))  
 (define grapevine-connection #f)
 (define grapevine-status 'disconnected)
 (define grapevine-players-cb void)
@@ -47,17 +46,6 @@
 (define pending-tells (make-hash))
 (define pending-subscribes (make-hash))
 (define pending-unsubscribes (make-hash))
-
-
-
-(define (set-grapevine-node! node)
-  (unless (and (bytes? node) (= 6 (bytes-length node)))
-    (raise-argument-error 'set-grapevine-node! "uuid-node?" node))
-  (set! grapevine-node node))
-
-
-(define (random-grapevine-node)
-  (make-random-node))
 
 (define (make-grapevine-message event #:payload [payload #f] #:ref [ref #f] #:error [error #f] #:status [status #f])
   (define msg/json (make-hasheq (list (cons 'event event))))
@@ -165,7 +153,7 @@
   (unless (member channel grapevine-channels)
     (raise-argument-error 'grapevine-broadcast "subscribed-channel?" channel))
   (when (symbol=? grapevine-status 'connected)
-    (ws-send! grapevine-connection (make-grapevine-message "channels/send" #:ref (uuid->string (uuid/1 grapevine-node)) #:payload (hasheq 'channel channel 'name name 'message message))))
+    (ws-send! grapevine-connection (make-grapevine-message "channels/send" #:ref (uuid-generate) #:payload (hasheq 'channel channel 'name name 'message message))))
   (grapevine-broadcast-cb channel name "local" message))
       
 
@@ -175,7 +163,7 @@
     (raise-argument-error 'grapevine-subscribe "grapevine-channel?" channel))
   (when (and (not (member channel grapevine-channels))
              (symbol=? grapevine-status 'connected))
-    (let ([ref (uuid->string (uuid/1 grapevine-node))])
+    (let ([ref (uuid-generate)])
       (hash-set! pending-subscribes ref channel)
       (ws-send! grapevine-connection (make-grapevine-message "channels/subscribe" #:ref ref #:payload (hasheq 'channel channel))))))
     
@@ -184,7 +172,7 @@
     (raise-argument-error 'grapevine-subscribe "grapevine-channel?" channel))
   (when (and (member channel grapevine-channels)
              (symbol=? grapevine-status 'connected))
-    (let ([ref (uuid->string (uuid/1 grapevine-node))])
+    (let ([ref (uuid-generate)])
       (hash-set! pending-unsubscribes ref channel)
       (ws-send! grapevine-connection (make-grapevine-message "channels/unsubscribe" #:ref ref #:payload (hasheq 'channel channel))))))
 
