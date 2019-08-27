@@ -1,13 +1,14 @@
 #lang racket/base
 
-(require json net/rfc6455 net/url racket/match racket/bool gregor libuuid racket/set) 
+(require json net/rfc6455 net/url racket/match racket/bool gregor libuuid racket/set (for-syntax racket/base)) 
 
 
 (provide grapevine?
          grapevine-status
          grapevine-channels
-         grapevine-version grapevine-supports grapevine-channels grapevine-channel?
-         grapevine-broadcast! grapevine-connect! grapevine-connected? grapevine-status grapevine-subscribe! grapevine-unsubscribe!
+         grapevine-version grapevine-supports grapevine-channels grapevine-channel? grapevine-subscribed-channel?
+         grapevine-broadcast! grapevine-tell!
+         grapevine-connect! grapevine-connected? grapevine-status grapevine-subscribe! grapevine-unsubscribe!
          grapevine-players/sign-in! grapevine-players/sign-out!)
 
 
@@ -36,7 +37,21 @@
    [thread #:mutable]
    sema
    channels
+   games
    pending-tells pending-subscribes pending-unsubscribes id secret user-agent))
+
+(define (lock! gv)
+  (semaphore-wait (grapevine-sema gv)))
+
+(define (unlock! gv)
+  (semaphore-post (grapevine-sema gv)))
+
+(define-syntax (critical! stx)
+  (syntax-case stx ()
+    [(_ gv body ...)
+     (syntax/loc stx
+       (call-with-semaphore (grapevine-sema gv)
+                            (lambda () body ...)))]))
 
 (define (get-players gv)
   ((grapevine-get-players gv)))
@@ -96,16 +111,18 @@
                          (begin
                            (unless (string=? grapevine-version (json-bytes->string (hash-ref payload 'version "")))
                              (on-error gv 'info 'new-version (json-bytes->string (hash-ref payload 'version ""))))
-                           (set-grapevine-restart! gv #f)
-                           (set-grapevine-status! gv 'connected)
+                           (critical! gv
+                                      (set-grapevine-restart! gv #f)
+                                      (set-grapevine-status! gv 'connected))
                            (on-event-response gv 'connected)
                            )
                          (begin
                            (ws-close! (grapevine-connection gv) #:reason "authentication failed")
-                           (set-grapevine-connection! gv #f)
-                           (set-grapevine-status! gv 'disconnected)
+                           (critical! gv
+                                      (set-grapevine-connection! gv #f)
+                                      (set-grapevine-status! gv 'disconnected))
                            (on-error gv 'error 'authentication-failed (format "status=~a payload=~a" status payload))
-                           (set-grapevine-thread! gv #f)
+                           (critical! gv (set-grapevine-thread! gv #f))
                            (kill-thread (current-thread))))]
                
                     [(heartbeat)
@@ -128,7 +145,8 @@
                       (hash-ref payload 'message)
                       ref)]
                     [(restart)
-                     (set-grapevine-status! gv 'restarting)
+                     (critical! gv
+                                (set-grapevine-status! gv 'restarting))
                      (set-grapevine-restart! gv (hash-ref payload 'downtime))]
                     [(channels/subscribe)
                      (let ([channel (hash-ref (grapevine-pending-subscribes gv) ref
@@ -136,24 +154,24 @@
                        (when (or (not status)
                                  (string=? status "success"))
                          (on-event-response gv `(channels/subscribe ,channel success))
-
-                         (set-add! (grapevine-channels gv) channel))
+                         (critical! gv
+                                    (set-add! (grapevine-channels gv) channel)))
                        (when (and (string? status)
                                   (string=? status "failure"))
                          (on-event-response gv `(channels/subscribe ,channel failure))
 
                          (on-error gv 'error 'channels/subscribe channel))
-                       (hash-remove! (grapevine-pending-subscribes gv) ref))]
+                       (critical! gv (hash-remove! (grapevine-pending-subscribes gv) ref)))]
                     [(channels/unsubscribe)
                      (let ([channel (hash-ref (grapevine-pending-unsubscribes gv) ref
                                               (λ () (on-error gv 'warning 'channels/unsubscribe (format "invalid ref: ~a" ref))))])
                        (when (or (not status)
                                  (string=? status "success"))
-                         (set-remove! (grapevine-channels gv channel)))
+                         (critical! gv  (set-remove! (grapevine-channels gv channel))))
                        (when (and (string? status)
                                   (string=? status "failure"))
                          (on-error gv 'error 'channels/unsubscribe channel))
-                       (hash-remove! (grapevine-pending-unsubscribes gv) ref))]
+                       (critical! gv (hash-remove! (grapevine-pending-unsubscribes gv) ref)))]
                     [(channels/send)
                      (on-event-response gv msg/json)]
                     [(players/sign-in players/sign-out)
@@ -169,44 +187,66 @@
 (define (grapevine-channel? v)
   (and (string? v) (regexp-match-exact? #px"[a-zA-Z_\\-]{3,15}" v)))
 
+(define (grapevine-subscribed-channel? gv v)
+  (critical! gv (set-member? (grapevine-channels gv) v)))
 
 (define (grapevine-broadcast! gv channel name message)
-  (unless (set-member? (grapevine-channels gv) channel)
-    (raise-argument-error 'grapevine-broadcast "subscribed-channel?" channel))
-  (when (symbol=? (grapevine-status gv) 'connected)
-    (ws-send! (grapevine-connection gv)
-              (make-grapevine-message "channels/send" #:ref (uuid-generate) #:payload (hasheq 'channel channel 'name name 'message message)))))
+  (critical! gv
+             (unless (set-member? (grapevine-channels gv) channel)
+               (raise-argument-error 'grapevine-broadcast "grapevine-subscribed-channel?" channel))
+             (and (symbol=? (grapevine-status gv) 'connected)
+                  (ws-send! (grapevine-connection gv)
+                            (make-grapevine-message "channels/send" #:ref (uuid-generate) #:payload (hasheq 'channel channel 'name name 'message message)))
+                  #t)))
+
+(define (grapevine-tell! gv sender to-game to-name message)
+  (critical! gv
+             (and (grapevine-connected? gv)
+                  (let ([ref (uuid-generate)])
+                    (hash-set! (grapevine-pending-tells gv) ref (list (now/moment/utc) sender to-game to-name message))
+                    (ws-send! (grapevine-connection gv)
+                              (make-grapevine-message "tells/send" #:ref ref #:payload (hasheq 'from_name sender
+                                                                                               'to_game to-game
+                                                                                               'to_name to-name
+                                                                                               'message message
+                                                                                               'sent_at (moment->iso8601 (now/moment/utc))))))
+                  #t)))
+  
 
 (define (grapevine-subscribe! gv channel)
-  (unless (grapevine-channel? channel)
-    (raise-argument-error 'grapevine-subscribe "grapevine-channel?" channel))
-  (when (and (not (set-member? (grapevine-channels gv) channel))
-             (symbol=? (grapevine-status gv) 'connected))
-    (let ([ref (uuid-generate)])
-      (hash-set! (grapevine-pending-subscribes gv) ref channel)
-      (ws-send! (grapevine-connection gv)
-                (make-grapevine-message "channels/subscribe" #:ref ref #:payload (hasheq 'channel channel))))))
+  (critical! gv
+             (unless (grapevine-channel? channel)
+               (raise-argument-error 'grapevine-subscribe "grapevine-channel?" channel))
+             (when (and (not (set-member? (grapevine-channels gv) channel))
+                        (symbol=? (grapevine-status gv) 'connected))
+               (let ([ref (uuid-generate)])
+                 (hash-set! (grapevine-pending-subscribes gv) ref channel)
+                 (ws-send! (grapevine-connection gv)
+                           (make-grapevine-message "channels/subscribe" #:ref ref #:payload (hasheq 'channel channel)))))))
     
 (define (grapevine-unsubscribe! gv channel)
-  (unless (grapevine-channel? channel)
-    (raise-argument-error 'grapevine-subscribe "grapevine-channel?" channel))
-  (when (and (set-member? (grapevine-channels gv) channel)
-             (symbol=? (grapevine-status gv) 'connected))
-    (let ([ref (uuid-generate)])
-      (hash-set! (grapevine-pending-unsubscribes gv) ref channel)
-      (ws-send! (grapevine-connection gv)
-                (make-grapevine-message "channels/unsubscribe" #:ref ref #:payload (hasheq 'channel channel))))))
+  (critical! gv
+             (unless (grapevine-channel? channel)
+               (raise-argument-error 'grapevine-subscribe "grapevine-channel?" channel))
+             (when (and (set-member? (grapevine-channels gv) channel)
+                        (symbol=? (grapevine-status gv) 'connected))
+               (let ([ref (uuid-generate)])
+                 (hash-set! (grapevine-pending-unsubscribes gv) ref channel)
+                 (ws-send! (grapevine-connection gv)
+                           (make-grapevine-message "channels/unsubscribe" #:ref ref #:payload (hasheq 'channel channel)))))))
 
 (define (grapevine-players/sign-in! gv name)
-  (when (symbol=? (grapevine-status gv) 'connected)
-    (ws-send! (grapevine-connection gv)
-              (make-grapevine-message "players/sign-in" #:payload (hasheq 'name name)))))
+  (critical! gv
+             (when (symbol=? (grapevine-status gv) 'connected)
+               (ws-send! (grapevine-connection gv)
+                         (make-grapevine-message "players/sign-in" #:payload (hasheq 'name name))))))
 
 (define (grapevine-players/sign-out! gv name)
-  (when (symbol=? (grapevine-status gv) 'connected)
-    (ws-send! (grapevine-connection gv)
-              (make-grapevine-message "players/sign-out" #:payload (hasheq 'name name)))))
-
+  (critical! gv
+             (when (symbol=? (grapevine-status gv) 'connected)
+               (ws-send! (grapevine-connection gv)
+                         (make-grapevine-message "players/sign-out" #:payload (hasheq 'name name))))))
+  
 (define (grapevine-reconnect gv)
   (when (and (ws-conn? (grapevine-connection gv))
              (not (ws-conn-closed? (grapevine-connection gv))))
@@ -249,6 +289,7 @@
      (make-hash)
      (make-hash)
      (make-hash)
+     (make-hash)
      id
      secret
      user-agent))
@@ -256,10 +297,11 @@
   gv)
 
 (define (grapevine-connected? gv)
-  (and
-   (symbol=? 'connected (grapevine-status gv))
-   (ws-conn? (grapevine-connection gv))
-   (not (ws-conn-closed? (grapevine-connection gv)))))
+  (critical! gv
+             (and
+              (symbol=? 'connected (grapevine-status gv))
+              (ws-conn? (grapevine-connection gv))
+              (not (ws-conn-closed? (grapevine-connection gv))))))
 
 #|
 (define (players-stub)
