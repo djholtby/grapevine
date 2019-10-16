@@ -1,16 +1,15 @@
 #lang scribble/manual
 
 
-@(require scribble/manual
+@(require scribble/example
 	  (for-label racket
-		     net/url
-		     net/rfc6455
-		     uuid
 		     grapevine))
 
 @title{Grapevine}
 
 @author[(author+email "Daniel Holtby" "djholtby@gmail.com")]
+
+@defmodule[grapevine]
 
 @local-table-of-contents[]
 
@@ -22,9 +21,8 @@ using @racket[net/rfc6455] for WebSockets.
 
 @section{API}
 
-
-; grapevine-connect!: string string string ( -> (listof String)) (String String String String -> Void) (String String String Gregor String) (Symbol String -> Void) -> Bool
-;(define (grapevine-connect! id secret user-agent players-callback broadcast-callback tell-callback response-callback error-callback #:url [url grapevine-url/default] #:channels [chan '()])
+@(define make-gv-eval
+   (make-eval-factory '(grapevine)))
 
 @defproc[(grapevine-connect!
 	[id string?]
@@ -40,6 +38,17 @@ using @racket[net/rfc6455] for WebSockets.
          grapevine?]{ Produces a grapevine connection object.  
 
                                                     }
+
+@defproc[(grapevine? [v any/c]) boolean?]{Predicate to check if a value is a Grapevine object}
+@defproc[(grapevine-channel? [s string]) boolean?]{Predicate to check if a string is a legal name for a Grapevine channel.
+
+@examples[
+          #:eval (make-gv-eval)
+          (grapevine-channel? "gossip")
+          (grapevine-channel? "no spaces")
+]}
+
+
 
 ;(define (grapevine-broadcast! gv channel name message)
 
