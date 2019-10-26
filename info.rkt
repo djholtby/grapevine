@@ -6,7 +6,7 @@
 (define version "1.0")
 (define pkg-authors '(djholtby))
 
-(define deps '("base" "gregor" "rfc6455" "libuuid"))
+(define deps '("base" "gregor" "rfc6455" "uuid"))
 (define build-deps '("racket-doc"
                      "scribble-lib"))
 
