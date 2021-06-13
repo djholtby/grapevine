@@ -90,10 +90,13 @@
 (define (make-grapevine-thunk gv)
   (letrec ([grapevine-thunk
             (lambda ()
-              (define msg (ws-recv (grapevine-connection gv)))
-              (define connected? (not (eof-object? msg)))
+              (define msg (and (not (ws-conn-closed? (grapevine-connection gv)))
+                               (ws-recv (grapevine-connection gv))))
+              (define connected? (and msg (not (eof-object? msg))))
 
               (unless connected?
+                (on-error gv 'warning 'connection-lost
+                          (ws-conn-close-reason (grapevine-connection gv)))
                 (when (and (grapevine-restart gv)
                            (symbol=? (grapevine-status gv) 'restarting))
                   (sleep (grapevine-restart gv))
@@ -284,7 +287,9 @@
   (set-grapevine-status! gv 'connecting)
   (set-grapevine-connection! gv (ws-connect (grapevine-url gv)))
   (if (ws-conn-closed? (grapevine-connection gv))
-      #f
+      (begin0
+        #f
+        (on-error gv 'error 'ws-connect-fail (ws-conn-close-reason (grapevine-connection gv))))
       (begin0
         #t
         (ws-send! (grapevine-connection gv)
@@ -292,18 +297,6 @@
         (set-grapevine-status! gv 'authenticating)
         (unless (grapevine-thread gv)
           (set-grapevine-thread! gv (thread (make-grapevine-thunk gv)))))))
-
-#|
-  ([connnection #:mutable]
-   url
-   [status #:mutable]
-   get-players on-broadcast on-tell on-error on-event-response
-   [restart #:mutable]
-   [thread #:mutable]
-   sema
-   channels
-   pending-tells pending-subscribes pending-unsubscribes id secret))
-|#
 
 ; grapevine-connect!: string string string ( -> (listof String))
 ;                     (String String String String -> Void)
@@ -337,18 +330,3 @@
               (symbol=? 'connected (grapevine-status gv))
               (ws-conn? (grapevine-connection gv))
               (not (ws-conn-closed? (grapevine-connection gv))))))
-
-#|
-(define (players-stub)
-  '("Zared"))
-
-(define (broadcast-stub chan game name msg)
-  (printf "[~a] ~a@~a: ~a\n" chan name game msg))
-
-(define (tell-stub from_game from_name to_name time msg)
-  (printf "[~a] ~a@~a >> ~a: ~a\n" time from_name from_game to_name msg))
-
-(define (error-stub reason msg)
-  (eprintf "~a: ~a\n" reason msg))
-
-|#
