@@ -125,6 +125,7 @@
                                       (set-grapevine-restart! gv #f)
                                       (set-grapevine-status! gv 'connected))
                            (on-event-response gv 'connected)
+                           (on-error gv 'info 'authenticated (jsexpr->string payload))
                            )
                          (begin
                            (ws-close! (grapevine-connection gv) #:reason "authentication failed")
